@@ -132,96 +132,41 @@ angular.module('proton.authentication')
         });
     }
 
+
     function tryAuth(infoResp, method, endpoint, req, creds, headers, fallbackAuthVersion) {
-        function srpHasher(arr) {
-            return passwords.expandHash(pmcrypto.arrayToBinaryString(arr));
-        }
-
-        let proofs;
-        let useFallback;
-
+        const useFallback = false;
         const session = infoResp.data.SRPSession;
-        const modulus = pmcrypto.binaryStringToArray(pmcrypto.decode_base64(openpgp.cleartext.readArmored(infoResp.data.Modulus).getText()));
-        const serverEphemeral = pmcrypto.binaryStringToArray(pmcrypto.decode_base64(infoResp.data.ServerEphemeral));
 
-        let authVersion = infoResp.data.Version;
-        useFallback = authVersion === 0;
-        if (useFallback) {
-            authVersion = fallbackAuthVersion;
+        const httpReq = {
+            method,
+            url: url.get() + endpoint,
+            data: _.extend(req, {
+                SRPSession: session,
+                Username: creds.Username,
+                Password: creds.Password,
+                TwoFactorCode: creds.TwoFactorCode
+            })
+        };
+        if (angular.isDefined(headers)) {
+            httpReq.headers = headers;
         }
 
-        if (authVersion < 3) {
-            creds.Username = infoResp.data.Username;
-            // See https://github.com/ProtonMail/Angular/issues/4332
-            // return Promise.reject({ error_description: 'An unexpected error has occurred. Please log out and log back in to fix it.' });
-        }
-
-        if (authVersion === 2 && passwords.cleanUsername(creds.Username) !== passwords.cleanUsername(infoResp.data.Username) ||
-            authVersion <= 1 && creds.Username.toLowerCase() !== infoResp.data.Username.toLowerCase()) {
-            return Promise.reject({
-                error_description: 'Please login with just your ProtonMail username (without @protonmail.com or @protonmail.ch).'
-            });
-        }
-
-        let salt = '';
-        if (authVersion >= 3) {
-            salt = pmcrypto.decode_base64(infoResp.data.Salt);
-        }
-
-        return passwords.hashPassword(authVersion, creds.Password, salt, creds.Username, modulus).then((hashed) => {
-            proofs = generateProofs(
-                2048,
-                srpHasher,
-                modulus,
-                hashed,
-                serverEphemeral
-            );
-
-            if (proofs.Type !== 'Success') {
-                return Promise.reject({
-                    error_description: proofs.Description
-                });
-            }
-
-            const httpReq = {
-                method,
-                url: url.get() + endpoint,
-                data: _.extend(req, {
-                    SRPSession: session,
-                    ClientEphemeral: pmcrypto.encode_base64(pmcrypto.arrayToBinaryString(proofs.ClientEphemeral)),
-                    ClientProof: pmcrypto.encode_base64(pmcrypto.arrayToBinaryString(proofs.ClientProof)),
-                    TwoFactorCode: creds.TwoFactorCode
-                })
-            };
-            if (angular.isDefined(headers)) {
-                httpReq.headers = headers;
-            }
-
-            return $http(httpReq);
-        }, (err) => {
-            return Promise.reject({
-                error_description: err.message
-            });
-        }).then(
+        return $http(httpReq).then(
             (resp) => {
                 if (resp.data.Code !== 1000) {
                     return Promise.reject({
                         error_description: resp.data.Error,
                         usedFallback: useFallback
                     });
-                } else if (pmcrypto.encode_base64(pmcrypto.arrayToBinaryString(proofs.ExpectedServerProof)) === resp.data.ServerProof) {
-                    return Promise.resolve(_.extend(resp, { authVersion }));
                 } else {
-                    return Promise.reject({
-                        error_description: 'Invalid server authentication'
-                    });
+                    return Promise.resolve(_.extend(resp, { authVersion: passwords.currentAuthVersion }));
                 }
             },
             (error) => {
                 return Promise.reject(error);
             }
         );
-    }
+    } 
 
     function randomVerifier(password) {
         return authApi.modulus().then((resp) => {
